@@ -93,10 +93,6 @@ export function reviewIdentity(patch: string, reviewedRef?: string, targetSignat
 	return digest([patch, reviewedRef ?? "", targetSignature ?? ""]);
 }
 
-function legacyReviewIdentity(patch: string, reviewedRef?: string): string {
-	return digest([patch, reviewedRef ?? ""]);
-}
-
 function isJsonValue(value: unknown): value is JsonValue {
 	if (value === null || typeof value === "boolean" || typeof value === "string") return true;
 	if (typeof value === "number") return Number.isFinite(value);
@@ -142,37 +138,6 @@ export function targetSignatureFromReview(review: Record<string, unknown>): stri
 export function targetSignatureFromSnapshot(snapshot: Pick<ReviewSnapshot, "source" | "targetSignature">): string {
 	if (snapshot.targetSignature) return snapshot.targetSignature;
 	return object(snapshot.source) ? targetSignatureFromReview(snapshot.source) ?? "" : "";
-}
-
-/** Validate a serialized checkpoint snapshot before trusting session data. */
-export function isReviewSnapshot(value: unknown): value is ReviewSnapshot {
-	if (!object(value) || value.version !== 1 || !rawString(value.sessionId) || !object(value.source)) return false;
-	if (value.reviewedRef !== undefined && !rawString(value.reviewedRef)) return false;
-	if (value.targetSignature !== undefined && !rawString(value.targetSignature)) return false;
-	if (!Array.isArray(value.files) || value.files.length < 1 || !Array.isArray(value.notes)) return false;
-	const fileKeys = new Set<string>();
-	for (const file of value.files) {
-		if (!object(file) || !rawString(file.path) || !rawString(file.patch) || !object(file.stats) || !Array.isArray(file.hunks)) return false;
-		if (file.id !== undefined && !rawString(file.id)) return false;
-		if (file.previousPath !== undefined && typeof file.previousPath !== "string") return false;
-		if (!isJsonValue(file.stats) || !isJsonValue(file.hunks)) return false;
-		const key = digestPath(file.path as string);
-		if (fileKeys.has(key)) return false;
-		fileKeys.add(key);
-	}
-	for (const note of value.notes) {
-		if (!object(note) || note.source !== "user" || typeof note.body !== "string" || !rawString(note.file) || !object(note.timestamps)) return false;
-		if (note.id !== undefined && typeof note.id !== "string") return false;
-		if (note.title !== undefined && typeof note.title !== "string") return false;
-		for (const field of [note.hunk, note.oldRange, note.newRange, note.author, note.timestamps]) {
-			if (field !== undefined && !isJsonValue(field)) return false;
-		}
-	}
-	if (!isJsonValue(value.source) || typeof value.patchDigest !== "string" || typeof value.reviewIdentity !== "string") return false;
-	const snapshot = value as unknown as ReviewSnapshot;
-	const currentIdentity = reviewIdentity(snapshot.patchDigest, snapshot.reviewedRef, snapshot.targetSignature);
-	const legacyIdentity = snapshot.targetSignature === undefined ? legacyReviewIdentity(snapshot.patchDigest, snapshot.reviewedRef) : "";
-	return patchDigest(snapshot.files) === snapshot.patchDigest && (currentIdentity === snapshot.reviewIdentity || legacyIdentity === snapshot.reviewIdentity);
 }
 
 function reviewedRefFrom(review: Record<string, unknown>): string | undefined {
@@ -239,29 +204,6 @@ function canonical(value: JsonValue): string {
 	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
 	if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key]!)}`).join(",")}}`;
 	return JSON.stringify(value);
-}
-
-function comparableSnapshot(snapshot: ReviewSnapshot): JsonValue {
-	const sorted = (values: readonly unknown[]) => values
-		.map((value) => clone(value))
-		.sort((left, right) => canonical(left).localeCompare(canonical(right)));
-	return {
-		version: snapshot.version,
-		sessionId: snapshot.sessionId,
-		source: clone(snapshot.source),
-		reviewedRef: snapshot.reviewedRef ?? null,
-		targetSignature: snapshot.targetSignature ?? null,
-		files: sorted(snapshot.files),
-		notes: sorted(snapshot.notes),
-		patchDigest: snapshot.patchDigest,
-		reviewIdentity: snapshot.reviewIdentity,
-	};
-}
-
-/** Semantic snapshot equality. File/note display order is not review identity;
- * exact patches, wording, coordinates, IDs, and metadata still participate. */
-export function sameSnapshot(left: ReviewSnapshot, right: ReviewSnapshot): boolean {
-	return canonical(comparableSnapshot(left)) === canonical(comparableSnapshot(right));
 }
 
 /**

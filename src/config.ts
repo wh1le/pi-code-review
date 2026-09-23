@@ -55,9 +55,3 @@ export async function loadConfig(cwd: string): Promise<HunkConfig> {
 	const projectConfig = await loadJsonFile(path.join(cwd, ".pi", "hunk.json"));
 	return mergeConfig(mergeConfig(DEFAULT_CONFIG, globalConfig), projectConfig);
 }
-
-export async function saveProjectConfig(cwd: string, config: HunkConfig): Promise<void> {
-	const dir = path.join(cwd, ".pi");
-	await fs.mkdir(dir, { recursive: true });
-	await fs.writeFile(path.join(dir, "hunk.json"), JSON.stringify(config, null, 2) + "\n", "utf8");
-}

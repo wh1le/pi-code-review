@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,17 +24,17 @@ const jiti = createRequire(path.join(piRoot, "package.json"))("jiti")(import.met
 	},
 });
 
-function ctx(cwd, ui, entries, idle = true) {
-	return {
-		cwd, ui, mode: "tui", hasUI: true, signal: undefined, isIdle: () => idle,
-		sessionManager: { getBranch: () => entries }, modelRegistry: {}, model: undefined,
-		isProjectTrusted: () => true, abort() {}, hasPendingMessages: () => false, shutdown() {}, getContextUsage: () => undefined,
-		compact() {}, getSystemPrompt: () => "", getSystemPromptOptions: () => ({}), waitForIdle: async () => {}, newSession: async () => ({ cancelled: false }), fork: async () => ({ cancelled: false }), navigateTree: async () => ({ cancelled: false }), switchSession: async () => ({ cancelled: false }), reload: async () => {},
-	};
+function ctx(cwd, ui, idle = true) {
+	return { cwd, ui, mode: "tui", signal: undefined, isIdle: () => idle };
 }
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-hunk-smoke-"));
+let dummy;
 try {
+	// A real live process the extension can stop by pid.
+	dummy = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore" });
+	await new Promise((resolve) => dummy.on("spawn", resolve));
+
 	const binary = path.join(tmp, "fake-hunk.mjs");
 	await writeFile(binary, `#!/usr/bin/env node
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,21 +42,29 @@ const args = process.argv.slice(2);
 const marker = ".fake-hunk-live";
 const notesFile = ".fake-hunk-notes.json";
 const patchFile = ".fake-hunk-patch";
+const pidFile = ".fake-hunk-pid";
+const readsFile = ".fake-hunk-reads";
 const payload = () => ({
-  sessionId: "smoke-session", title: "pi-hunk main...smoke", sourceLabel: process.cwd(),
+  sessionId: "smoke-session", title: "pi-hunk working tree", sourceLabel: process.cwd(), repoRoot: process.cwd(), inputKind: "vcs",
   files: [{ path: "smoke.ts", patch: readFileSync(patchFile, "utf8"), additions: 1, deletions: 1, hunkCount: 1, hunks: [{ oldStart: 1, newStart: 1 }] }],
   reviewNotes: JSON.parse(readFileSync(notesFile, "utf8"))
 });
 if (args[0] === "diff" && args[1] === "--watch") {
   writeFileSync(".fake-hunk-args", args.join("\\n"));
   writeFileSync(marker, "live");
-  setTimeout(() => { try { rmSync(marker); } catch {} process.exit(0); }, 700);
+  writeFileSync(pidFile, String(process.pid));
+  const exit = () => { try { rmSync(marker); } catch {} process.exit(0); };
+  process.on("SIGTERM", exit);
+  setTimeout(exit, 700);
 } else if (args[0] === "session" && args[1] === "get") {
   if (!existsSync(marker)) { console.error("No active Hunk sessions are registered"); process.exit(1); }
-  console.log(JSON.stringify({ id: "smoke-session" }));
+  console.log(JSON.stringify({ id: "smoke-session", pid: Number(readFileSync(pidFile, "utf8")) }));
 } else if (args[0] === "session" && args[1] === "review") {
   if (!existsSync(marker)) { console.error("No active Hunk sessions are registered"); process.exit(1); }
   if (!args.includes("--include-patch") || !args.includes("--include-notes") || !args.includes("--json")) process.exit(2);
+  let count = 0;
+  try { count = Number(readFileSync(readsFile, "utf8")); } catch {}
+  writeFileSync(readsFile, String(count + 1));
   console.log(JSON.stringify(payload()));
 } else if (args[0] === "session" && args[1] === "navigate") {
   writeFileSync(".fake-hunk-navigate", args.join("\\n"));
@@ -69,25 +78,18 @@ if (args[0] === "diff" && args[1] === "--watch") {
 	const originalPatch = "--- a/smoke.ts\n+++ b/smoke.ts\n@@ -1,1 +1,1 @@\n-old\n+new";
 	await writeFile(path.join(tmp, ".fake-hunk-patch"), originalPatch);
 	await writeFile(path.join(tmp, "smoke.ts"), "extension must not mutate this\n");
+	await writeFile(path.join(tmp, ".fake-hunk-reads"), "0");
 
-	const entries = [];
 	const notifications = [];
 	const sent = [];
-	const statuses = new Map();
-	const selectors = [];
-	const inputs = [];
-	const shortcuts = new Map();
+	const selections = [];
+	const selectQueue = [];
 	const tui = { stopped: 0, started: 0, redraws: 0, stop() { this.stopped++; }, start() { this.started++; }, requestRender() { this.redraws++; } };
 	const ui = {
-		setStatus: (key, value) => statuses.set(key, value),
 		notify: (message, type = "info") => notifications.push({ message, type }),
 		select: async (title, options) => {
-			selectors.push({ title, options });
-			return options.includes("Keep for later") ? "Keep for later" : options[0];
-		},
-		input: async (title, placeholder) => {
-			inputs.push({ title, placeholder });
-			return "";
+			selections.push({ title, options });
+			return selectQueue.shift() ?? "Cancel";
 		},
 		custom: (factory) => new Promise((resolve, reject) => {
 			let done = false;
@@ -95,29 +97,25 @@ if (args[0] === "diff" && args[1] === "--watch") {
 			Promise.resolve(factory(tui, {}, {}, finish)).catch(reject);
 		}),
 	};
-	const tools = new Map();
-	const commands = new Map();
 	const handlers = new Map();
+	const commands = new Map();
+	const shortcuts = new Map();
 	const pi = {
 		on(event, handler) { const list = handlers.get(event) ?? []; list.push(handler); handlers.set(event, list); },
-		registerTool(tool) { tools.set(tool.name, tool); }, registerCommand(name, options) { commands.set(name, options); }, registerShortcut(key, options) { shortcuts.set(key, options); }, registerFlag() {}, getFlag() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
-		sendMessage(message, options) { sent.push({ message, options }); }, sendUserMessage() { throw new Error("implicit delivery must not run"); }, appendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },
-		setSessionName() {}, getSessionName() {}, setLabel() {}, exec: async () => ({ stdout: "", stderr: "", code: 0 }), getActiveTools: () => [...tools.keys()], getAllTools: () => [], setActiveTools() {}, getCommands: () => [], setModel: async () => true, getThinkingLevel: () => "high", setThinkingLevel() {}, registerProvider() {}, unregisterProvider() {}, events: { on() {}, emit() {} },
+		registerCommand(name, options) { commands.set(name, options); },
+		registerShortcut(key, options) { shortcuts.set(key, options); },
+		sendMessage(message, options) { sent.push({ message, options }); },
 	};
 
 	const extension = await jiti.import(path.join(repoRoot, "src", "index.ts"), { default: true });
 	await extension(pi);
-	assert.equal(tools.size, 0, "extension leaves Pi tools untouched");
 	assert.ok(commands.has("hunk"));
-	assert.equal(shortcuts.get("ctrl+shift+h").description, "Open Hunk review checkpoint.");
+	assert.equal(shortcuts.size, 0, "no shortcut: /hunk is the only entry point");
 	const command = commands.get("hunk");
-	assert.deepEqual(command.getArgumentCompletions("").map((item) => item.value), ["status", "review", "submit", "abandon", "configure"]);
-	assert.equal(handlers.has("before_agent_start"), false);
+	assert.equal(command.getArgumentCompletions, undefined, "no subcommands");
 	assert.equal(handlers.has("tool_result"), true);
 
-	const commandCtx = ctx(tmp, ui, entries);
-	for (const handler of handlers.get("session_start") ?? []) await handler({ type: "session_start" }, commandCtx);
-	assert.equal(statuses.get("hunk"), "hunk · ready");
+	const commandCtx = ctx(tmp, ui);
 
 	// Observe successful native file tools only for Hunk focus; never execute, replace, or alter them.
 	const writeEvent = { type: "tool_result", toolName: "write", toolCallId: "write-1", input: { path: "smoke.ts", content: "ignored" }, content: [], details: undefined, isError: false };
@@ -130,78 +128,71 @@ if (args[0] === "diff" && args[1] === "--watch") {
 	assert.deepEqual(writeEvent, unchangedWriteEvent);
 	assert.equal(await readFile(path.join(tmp, "smoke.ts"), "utf8"), "extension must not mutate this\n");
 
-	// Existing side pane: attach, capture, navigate, and submit exactly once.
-	await writeFile(path.join(tmp, ".fake-hunk-live"), "live");
-	await command.handler("review", commandCtx);
-	assert.equal(tui.stopped, 0);
-	assert.equal(entries.filter((entry) => entry.customType === "hunk-checkpoint").length, 1);
-	for (let i = 0; i < 20 && !existsSync(path.join(tmp, ".fake-hunk-navigate")); i++) await new Promise((resolve) => setTimeout(resolve, 25));
+	// Busy agent: single command refuses instead of racing a turn.
+	const noticeStart = notifications.length;
+	await command.handler("", ctx(tmp, ui, false));
+	assert.ok(notifications.slice(noticeStart).some((notice) => notice.message.includes("requires idle Pi")));
+
+	// No session: one direct child handoff, focused on the latest file, auto-submitted on close.
+	await command.handler("", commandCtx);
+	assert.deepEqual([tui.stopped, tui.started, tui.redraws], [1, 1, 1]);
+	assert.match(await readFile(path.join(tmp, ".fake-hunk-args"), "utf8"), /--no-exclude-untracked/);
+	for (let i = 0; i < 40 && !existsSync(path.join(tmp, ".fake-hunk-navigate")); i++) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.match(await readFile(path.join(tmp, ".fake-hunk-navigate"), "utf8"), /smoke\.ts[\s\S]*--hunk[\s\S]*1/);
-	await writeFile(path.join(tmp, ".fake-hunk-patch"), "--- a/smoke.ts\n+++ b/smoke.ts\n@@ -1,1 +1,1 @@\n-old\n+stale");
-	await command.handler("submit", commandCtx);
-	assert.equal(sent.length, 0);
-	assert.ok(notifications.some((notice) => notice.message.includes("re-review due")));
-	await writeFile(path.join(tmp, ".fake-hunk-patch"), originalPatch);
-	await command.handler("review", commandCtx);
-	await rm(path.join(tmp, ".fake-hunk-live"), { force: true });
-	await new Promise((resolve) => setTimeout(resolve, 600));
-	await command.handler("submit", commandCtx);
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].options.triggerTurn, true);
 	assert.equal(sent[0].options.deliverAs, "followUp");
 	assert.match(sent[0].message.content, /exact smoke note/);
 	assert.doesNotMatch(sent[0].message.content, /--- a\/smoke/);
-	await command.handler("submit", commandCtx);
-	assert.equal(sent.length, 1);
+	assert.equal(sent[0].message.details.notes.length, 1);
 
-	// Session entries fold after reload; abandonment stays local.
-	for (const handler of handlers.get("session_start") ?? []) await handler({ type: "session_start" }, commandCtx);
-	await command.handler("abandon", commandCtx);
-	assert.equal(sent.length, 1);
-
-	// No session: one direct child handoff, then automatic empty approval on close.
+	// Empty review: approved silently, no model turn.
 	await writeFile(path.join(tmp, ".fake-hunk-notes.json"), "[]");
-	const noticeStart = notifications.length;
-	await command.handler("review", commandCtx);
-	assert.deepEqual([tui.stopped, tui.started, tui.redraws], [1, 1, 1]);
-	assert.match(await readFile(path.join(tmp, ".fake-hunk-args"), "utf8"), /--no-exclude-untracked/);
-	assert.equal(notifications.slice(noticeStart).some((notice) => notice.message === "Hunk session disappeared."), false);
-	// Review close auto-submits: an empty review is approved without a model turn.
+	const approveStart = notifications.length;
+	await command.handler("", commandCtx);
 	assert.equal(sent.length, 1);
-	assert.equal(entries.at(-1).data.state, "approved");
-	assert.equal(entries.at(-1).data.version, 3);
-	assert.ok(notifications.slice(noticeStart).some((notice) => /approved.*No model turn started/.test(notice.message)));
-	assert.ok(entries.filter((entry) => entry.customType === "hunk-checkpoint").every((entry) => Number.isFinite(Date.parse(entry.data.at))));
-	// Manual submit after automatic approval refuses instead of double-submitting.
-	await command.handler("submit", commandCtx);
-	assert.equal(sent.length, 1);
-	assert.ok(notifications.some((notice) => notice.message.includes("requires one reviewing checkpoint")));
+	assert.ok(notifications.slice(approveStart).some((notice) => /approved with no notes/.test(notice.message)));
+	assert.deepEqual([tui.stopped, tui.started, tui.redraws], [2, 2, 2]);
 
-	// Approval is invalidated by later complete Hunk changeset change.
-	await writeFile(path.join(tmp, ".fake-hunk-live"), "live");
-	await writeFile(path.join(tmp, ".fake-hunk-patch"), "--- a/smoke.ts\n+++ b/smoke.ts\n@@ -1,1 +1,1 @@\n-old\n+post-approval");
-	for (const handler of handlers.get("agent_settled") ?? []) await handler({ type: "agent_settled" }, commandCtx);
-	assert.equal(entries.at(-1).data.state, "re_review_due");
+	// Existing session: attach, forward once it closes.
+	await writeFile(path.join(tmp, ".fake-hunk-notes.json"), JSON.stringify([{ source: "user", filePath: "smoke.ts", newRange: [1, 1], hunk: 1, body: "attached note", author: "human" }]));
 	await writeFile(path.join(tmp, ".fake-hunk-patch"), originalPatch);
+	await writeFile(path.join(tmp, ".fake-hunk-reads"), "0");
+	await writeFile(path.join(tmp, ".fake-hunk-live"), "live");
+	await writeFile(path.join(tmp, ".fake-hunk-pid"), String(dummy.pid));
+	selectQueue.push("Attach: forward its notes when Hunk closes");
+	const attached = command.handler("", commandCtx);
+	for (let i = 0; i < 80 && Number(await readFile(path.join(tmp, ".fake-hunk-reads"), "utf8")) < 1; i++) await new Promise((resolve) => setTimeout(resolve, 25));
 	await rm(path.join(tmp, ".fake-hunk-live"), { force: true });
+	await attached;
+	assert.equal(tui.stopped, 2, "attach never takes over the terminal");
+	assert.equal(sent.length, 2);
+	assert.match(sent[1].message.content, /attached note/);
+	assert.ok(selections.at(-1).options.some((option) => option.startsWith("Attach:")));
+	assert.ok(selections.at(-1).options.includes("Cancel"));
 
-	const hunkDir = path.join(tmp, ".pi", "hunk");
-	let sidecars = [];
-	try { sidecars = await readdir(hunkDir); } catch {}
-	assert.equal(sidecars.length, 0);
+	// Existing session: stop it by pid, then spawn a fresh review.
+	await writeFile(path.join(tmp, ".fake-hunk-notes.json"), JSON.stringify([{ source: "user", filePath: "smoke.ts", newRange: [1, 1], hunk: 1, body: "restarted note", author: "human" }]));
+	await writeFile(path.join(tmp, ".fake-hunk-live"), "live");
+	await writeFile(path.join(tmp, ".fake-hunk-pid"), String(dummy.pid));
+	selectQueue.push(`Stop Hunk (pid ${dummy.pid}) and start a new review`);
+	const dummyExited = new Promise((resolve) => dummy.once("exit", () => resolve(true)));
+	await command.handler("", commandCtx);
+	assert.equal(await Promise.race([dummyExited, new Promise((resolve) => setTimeout(() => resolve(false), 2000))]), true, "running Hunk was stopped by pid");
+	assert.ok(notifications.some((notice) => /Stopped Hunk/.test(notice.message)));
+	assert.deepEqual([tui.stopped, tui.started, tui.redraws], [3, 3, 3]);
+	assert.equal(sent.length, 3);
+	assert.match(sent[2].message.content, /restarted note/);
 
-	// Hunk-only configuration remains idle-only and preserves binary by blank input.
-	const selectorStart = selectors.length;
-	await command.handler("configure", ctx(tmp, ui, entries, false));
-	assert.equal(selectors.length, selectorStart);
-	assert.ok(notifications.some((notice) => notice.type === "warning" && notice.message.includes("cannot open while agent responds")));
-	await command.handler("configure", commandCtx);
-	assert.equal(selectors.at(-1).title, "Hunk integration");
-	assert.deepEqual(selectors.at(-1).options, ["Enabled", "Disabled"]);
-	assert.equal(inputs.at(-1).placeholder, binary);
-	assert.deepEqual(JSON.parse(await readFile(path.join(tmp, ".pi", "hunk.json"), "utf8")), { hunk: { enabled: true, binary } });
+	// Existing session: cancel does nothing.
+	await writeFile(path.join(tmp, ".fake-hunk-live"), "live");
+	await writeFile(path.join(tmp, ".fake-hunk-pid"), String(process.pid));
+	await command.handler("", commandCtx);
+	assert.equal(sent.length, 3);
+	assert.deepEqual([tui.stopped, tui.started, tui.redraws], [3, 3, 3]);
 
 	console.log("pi-hunk smoke ok");
 } finally {
+	dummy?.kill("SIGKILL");
 	await rm(tmp, { recursive: true, force: true });
 }

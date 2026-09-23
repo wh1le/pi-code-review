@@ -5,26 +5,16 @@ import {
 	type ExtensionCommandContext,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { ReviewCheckpoint } from "./checkpoint-store";
-import { compareHunkFingerprint, unknownReasonMessage } from "./changeset";
-import { openHunkConfig } from "./configure";
-import { createExtensionState, type ExtensionState } from "./extension-state";
+import { unknownReasonMessage } from "./changeset";
+import { loadConfig, type HunkConfig } from "./config";
+import { createFileActivityStore } from "./file-activity";
+import { createGitChangesetAdapter } from "./git-changeset";
+import { handoffToSpawnedHunk, watchHunkSession } from "./hunk-handoff";
+import { createHunkSessionClient, type HunkSessionClient } from "./hunk-session-client";
 import { displayPath, resolveUserPath } from "./paths";
+import type { ReviewSnapshot } from "./review-export";
 
-type Completion = { value: string; label: string; description: string };
-
-const HUNK_SUBCOMMANDS: Completion[] = [
-	{ value: "status", label: "status", description: "Show checkpoint and Hunk session status." },
-	{ value: "review", label: "review", description: "Open Hunk review or attach its existing side pane." },
-	{ value: "submit", label: "submit", description: "Submit checkpointed human review notes." },
-	{ value: "abandon", label: "abandon", description: "Abandon active review checkpoint." },
-	{ value: "configure", label: "configure", description: "Configure Hunk integration." },
-];
-
-function hunkArgumentCompletions(prefix: string): Completion[] {
-	const trimmed = prefix.trim();
-	return trimmed ? HUNK_SUBCOMMANDS.filter((item) => item.value.startsWith(trimmed)) : HUNK_SUBCOMMANDS;
-}
+type GitAdapter = ReturnType<typeof createGitChangesetAdapter>;
 
 function diagnostic(ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void {
 	if (ctx.mode === "print" || ctx.mode === "json") {
@@ -34,15 +24,13 @@ function diagnostic(ctx: ExtensionContext, message: string, type: "info" | "warn
 	ctx.ui.notify(message, type);
 }
 
-function submissionContent(checkpoint: ReviewCheckpoint): string {
-	const snapshot = checkpoint.snapshot;
+function submissionContent(snapshot: ReviewSnapshot): string {
 	const lines = [
-		"Hunk human review submission:",
-		`Checkpoint: ${checkpoint.id} revision ${checkpoint.revision}`,
+		"Hunk review submission:",
+		`Session: ${snapshot.sessionId}`,
 		`Patch digest: ${snapshot.patchDigest}`,
-		`Revision captured: ${checkpoint.revisionCapturedAt}`,
+		`Captured: ${new Date().toISOString()}`,
 	];
-	if (checkpoint.submittedAt) lines.push(`Submitted: ${checkpoint.submittedAt}`);
 	if (snapshot.reviewedRef) lines.push(`Reviewed ref: ${snapshot.reviewedRef}`);
 	for (const [index, note] of snapshot.notes.entries()) {
 		lines.push("", `Note ${index + 1}:`, `File: ${note.file}`);
@@ -57,258 +45,146 @@ function submissionContent(checkpoint: ReviewCheckpoint): string {
 	return lines.join("\n");
 }
 
-function checkpointLabel(state: ExtensionState): string {
-	const checkpoint = state.currentCheckpoint();
-	if (!checkpoint) return "no checkpoint";
-	return `${checkpoint.id} revision ${checkpoint.revision} · ${checkpoint.state} · ${checkpoint.snapshot.notes.length} user note${checkpoint.snapshot.notes.length === 1 ? "" : "s"}`;
-}
-
-async function submitLocked(ctx: ExtensionCommandContext, pi: ExtensionAPI, state: ExtensionState): Promise<void> {
-	const current = state.currentCheckpoint();
-	if (!current || current.state !== "reviewing") {
-		diagnostic(ctx, "/hunk submit requires one reviewing checkpoint. Run /hunk review first.", "warning");
+/** Freshness-check the closed review against the working tree, then forward its human notes as one agent turn. */
+async function forwardReview(ctx: ExtensionCommandContext, pi: ExtensionAPI, git: GitAdapter, snapshot: ReviewSnapshot): Promise<void> {
+	const freshness = await git.captureFallback(ctx.cwd, snapshot, ctx.signal);
+	if (freshness.reason === "git_baseline_mismatch") {
+		diagnostic(ctx, "The working tree changed during the review. Run /hunk again to re-review before the notes can be submitted.", "warning");
 		return;
 	}
-
-	const freshness = await state.reconcileChangeset(ctx);
-	if (freshness?.kind === "changed") {
-		diagnostic(ctx, "The reviewed changeset changed. Checkpoint is re-review due; run /hunk review again.", "warning");
-		return;
+	if (freshness.reason) {
+		diagnostic(ctx, `Freshness could not be verified: ${unknownReasonMessage(freshness.reason)} Forwarding the captured review snapshot.`, "warning");
 	}
-	if (freshness?.kind === "unknown") {
-		diagnostic(ctx, `Freshness is unknown: ${unknownReasonMessage(freshness.reason)} Submission applies to the captured reviewed snapshot.`, "warning");
-	}
-
-	const live = await state.coordinator.finalExport();
-	if (!live.ok) {
-		diagnostic(ctx, `${live.error.message} Run /hunk review after fixing Hunk session state.`, "warning");
-		return;
-	}
-	const finalComparison = compareHunkFingerprint(current.baseline, live.value);
-	if (finalComparison.kind === "changed") {
-		await state.reconcileChangeset(ctx);
-		diagnostic(ctx, "The final Hunk export changed. Checkpoint is re-review due; run /hunk review again.", "warning");
-		return;
-	}
-
-	const captured = state.captureDraft(live.value);
-	if (!captured.ok) {
-		diagnostic(ctx, captured.error.message, "warning");
-		return;
-	}
-	const submitted = state.submit();
-	if (!submitted.ok) {
-		diagnostic(ctx, submitted.error.message, "warning");
-		return;
-	}
-	state.coordinator.cancel();
-	state.setLiveSession("none");
-	state.refreshPresentation(ctx);
-	if (!submitted.checkpoint.snapshot.notes.length) {
-		diagnostic(ctx, `Review ${submitted.checkpoint.id.slice(0, 8)} r${submitted.checkpoint.revision} approved. No model turn started.`, "info");
+	if (!snapshot.notes.length) {
+		diagnostic(ctx, "Hunk review approved with no notes. No agent turn started.", "info");
 		return;
 	}
 	pi.sendMessage(
 		{
 			customType: "hunk-review-submission",
-			content: submissionContent(submitted.checkpoint),
+			content: submissionContent(snapshot),
 			display: true,
 			details: {
-				checkpointId: submitted.checkpoint.id,
-				revision: submitted.checkpoint.revision,
-				revisionCapturedAt: submitted.checkpoint.revisionCapturedAt,
-				submittedAt: submitted.checkpoint.submittedAt,
-				reviewedRef: submitted.checkpoint.snapshot.reviewedRef,
-				patchDigest: submitted.checkpoint.snapshot.patchDigest,
-				notes: submitted.checkpoint.snapshot.notes,
+				sessionId: snapshot.sessionId,
+				reviewedRef: snapshot.reviewedRef,
+				patchDigest: snapshot.patchDigest,
+				notes: snapshot.notes,
 			},
 		},
 		{ triggerTurn: true, deliverAs: "followUp" },
 	);
-	diagnostic(ctx, `Submitted ${submitted.checkpoint.snapshot.notes.length} Hunk note(s) as one follow-up turn.`, "info");
+	diagnostic(ctx, `Forwarded ${snapshot.notes.length} Hunk note(s) to the agent.`, "info");
 }
 
-async function handleSubmit(ctx: ExtensionCommandContext, pi: ExtensionAPI, state: ExtensionState): Promise<void> {
-	if (!ctx.isIdle()) {
-		diagnostic(ctx, "/hunk submit requires idle Pi. Wait for agent response to finish.", "warning");
-		return;
-	}
-	await state.serial(() => submitLocked(ctx, pi, state));
-}
-
-async function abandonLocked(ctx: ExtensionCommandContext, state: ExtensionState): Promise<void> {
-	const abandoned = state.abandon();
-	if (!abandoned.ok) {
-		diagnostic(ctx, abandoned.error.message, "warning");
-		return;
-	}
-	state.coordinator.cancel();
-	state.setLiveSession("none");
-	state.refreshPresentation(ctx);
-	diagnostic(ctx, `Abandoned checkpoint ${abandoned.checkpoint.id.slice(0, 8)} r${abandoned.checkpoint.revision}. No model turn started.`, "info");
-}
-
-async function runReview(ctx: ExtensionContext, pi: ExtensionAPI, state: ExtensionState): Promise<void> {
-	if (!ctx.isIdle()) {
-		diagnostic(ctx, "/hunk review requires idle Pi. Wait for agent response to finish.", "warning");
-		return;
-	}
-	const config = state.getConfig();
-	if (!config.hunk.enabled) {
-		diagnostic(ctx, "Hunk integration is disabled in config.", "warning");
-		return;
-	}
-
-	await state.serial(async () => {
-		await state.reconcileChangeset(ctx);
-		const recentFile = state.activity.mostRecent();
-		const handoff = await state.coordinator.review(
-			ctx as ExtensionCommandContext,
+/** Spawn an owned Hunk review in this terminal; submit automatically when it closes. */
+async function runSpawnedReview(ctx: ExtensionCommandContext, pi: ExtensionAPI, sessionClient: HunkSessionClient, git: GitAdapter, config: HunkConfig, recentFile?: string): Promise<void> {
+	let handoff: Awaited<ReturnType<typeof handoffToSpawnedHunk>> | undefined;
+	await ctx.ui.custom<void>((tui, _theme, _keys, done) => {
+		void handoffToSpawnedHunk({
+			client: sessionClient,
+			cwd: ctx.cwd,
 			config,
-			recentFile ? { file: displayPath(recentFile, ctx.cwd), hunk: 1 } : undefined,
-		);
-		const snapshot = handoff.lastValidExport;
-
-		if (handoff.mode === "reuse") {
-			if (!snapshot) {
-				state.setLiveSession("none");
-				state.refreshPresentation(ctx);
-				diagnostic(ctx, handoff.exportError?.message ?? "The existing Hunk session did not provide a complete review export.", "error");
-				return;
-			}
-			state.setLiveSession("elsewhere");
-			const captured = await state.beginReview(snapshot, { cwd: ctx.cwd, allowGitFallback: false, signal: ctx.signal });
-			if (!captured.ok) {
-				diagnostic(ctx, captured.error.message, "warning");
-				return;
-			}
-			state.refreshPresentation(ctx);
-			diagnostic(ctx, "Review is active elsewhere; use /hunk submit here when the Hunk pane is ready.", "info");
-			return;
-		}
-
-		state.setLiveSession("none");
-		if (!snapshot) {
-			diagnostic(ctx, handoff.exportError?.message ?? handoff.launchError ?? (handoff.signal ? `Hunk ended by ${handoff.signal}.` : handoff.exitCode ? `Hunk exited with code ${handoff.exitCode}.` : "Hunk closed without a complete review export."), "error");
-			state.refreshPresentation(ctx);
-			return;
-		}
-
-		const captured = await state.beginReview(snapshot, { cwd: ctx.cwd, allowGitFallback: true, signal: ctx.signal });
-		if (!captured.ok) {
-			diagnostic(ctx, captured.error.message, "warning");
-			return;
-		}
-		state.refreshPresentation(ctx);
-
-		const recoverableWarning = handoff.exportError?.message
-			?? handoff.launchError
-			?? (handoff.signal ? `Hunk ended by ${handoff.signal}.` : handoff.exitCode !== undefined && handoff.exitCode !== null && handoff.exitCode !== 0 ? `Hunk exited with code ${handoff.exitCode}.` : undefined);
-		if (recoverableWarning) diagnostic(ctx, `Hunk closed with a recoverable warning: ${recoverableWarning} The complete checkpoint was retained.`, "warning");
-
-		// The owned Hunk review just closed: submit immediately so the agent
-		// applies the human notes in one follow-up turn. An empty review approves
-		// without starting a model turn. A busy agent keeps the checkpoint for later.
-		if (!ctx.isIdle()) {
-			diagnostic(ctx, "Agent is busy; the closed review was kept for later. Run /hunk submit when idle, or /hunk abandon.", "warning");
-			return;
-		}
-		await submitLocked(ctx as ExtensionCommandContext, pi, state);
+			tui,
+			onSessionReady: (lease) => {
+				if (recentFile) void sessionClient.navigate(ctx.cwd, config, lease.sessionId, { file: displayPath(recentFile, ctx.cwd), hunk: 1 }, ctx.signal);
+			},
+		})
+			.then((result) => (handoff = result))
+			.finally(() => done());
+		return { render: () => [], invalidate() {} };
 	});
+	if (!handoff) return;
+
+	const snapshot = handoff.lastValidExport;
+	const problem = handoff.exportError?.message
+		?? handoff.launchError
+		?? (handoff.signal ? `Hunk ended by ${handoff.signal}.` : handoff.exitCode ? `Hunk exited with code ${handoff.exitCode}.` : undefined);
+	if (!snapshot) {
+		diagnostic(ctx, problem ?? "Hunk closed without a complete review export.", "error");
+		return;
+	}
+	if (problem) diagnostic(ctx, `Hunk closed with a recoverable warning: ${problem} The complete review export was retained.`, "warning");
+	await forwardReview(ctx, pi, git, snapshot);
 }
 
-async function handleHunkCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI, state: ExtensionState): Promise<void> {
-	const config = state.getConfig();
-	const sub = args.trim().split(/\s+/).filter(Boolean)[0] ?? "status";
-	if (!config.hunk.enabled && sub !== "status") {
-		diagnostic(ctx, "Hunk integration is disabled in config.", "warning");
+/** Attach to a Hunk session running elsewhere; submit automatically when it closes. */
+async function runAttachedReview(ctx: ExtensionCommandContext, pi: ExtensionAPI, sessionClient: HunkSessionClient, git: GitAdapter, config: HunkConfig, sessionId: string, recentFile?: string): Promise<void> {
+	if (recentFile) void sessionClient.navigate(ctx.cwd, config, sessionId, { file: displayPath(recentFile, ctx.cwd), hunk: 1 }, ctx.signal);
+	const watch = watchHunkSession({ client: sessionClient, cwd: ctx.cwd, config, sessionId });
+	try {
+		await ctx.ui.custom<void>((_tui, _theme, _keys, done) => {
+			void watch.done.then(() => done());
+			return {
+				render: () => ["  hunk · attached to the running review · notes are forwarded when Hunk closes"],
+				invalidate() {},
+			};
+		});
+	} finally {
+		watch.stop();
+	}
+	const snapshot = await watch.done;
+	if (!snapshot) {
+		diagnostic(ctx, "The attached Hunk session closed without a complete review export.", "error");
 		return;
 	}
-	if (sub === "status") {
-		const freshness = await state.reconcileChangeset(ctx);
-		const probe = await state.sessionClient.probe(ctx.cwd, config, ctx.signal);
-		state.setLiveSession(probe.ok ? (state.getLiveSession() === "local" ? "local" : "elsewhere") : "none");
-		state.refreshPresentation(ctx);
-		const diagnostics = state.checkpointDiagnostics();
-		const session = probe.ok ? `live session ${probe.value.sessionId}` : `no live session (${probe.error.kind})`;
-		const ignored = diagnostics.ignoredEntries
-			? ` · ${diagnostics.ignoredEntries} malformed journal entr${diagnostics.ignoredEntries === 1 ? "y" : "ies"} ignored${diagnostics.lastError ? ` (${diagnostics.lastError})` : ""}`
-			: "";
-		const freshnessText = freshness ? (freshness.kind === "unknown" ? `unknown freshness (${freshness.reason})` : `${freshness.kind} freshness from ${freshness.source}`) : "freshness not checked";
-		diagnostic(ctx, `pi-hunk: ${checkpointLabel(state)} · live ${state.getLiveSession()} · ${session} · ${freshnessText}${ignored}`, probe.ok ? "info" : "warning");
-		return;
-	}
-	if (sub === "review") {
-		await runReview(ctx, pi, state);
-		return;
-	}
-	if (sub === "submit") {
-		await handleSubmit(ctx, pi, state);
-		return;
-	}
-	if (sub === "abandon") {
-		if (!ctx.isIdle()) {
-			diagnostic(ctx, "/hunk abandon requires idle Pi. Wait for agent response to finish.", "warning");
-			return;
-		}
-		await state.serial(() => abandonLocked(ctx, state));
-		return;
-	}
-	diagnostic(ctx, "Unknown /hunk command. Use status, review, submit, abandon, or configure.", "warning");
+	await forwardReview(ctx, pi, git, snapshot);
 }
 
 export default async function (pi: ExtensionAPI) {
-	const state = await createExtensionState(pi);
+	const sessionClient = createHunkSessionClient();
+	const git = createGitChangesetAdapter();
+	const activity = createFileActivityStore();
 
-	const refreshAfterSession = async (ctx: ExtensionContext) => {
-		await state.reconcileChangeset(ctx);
-		const probe = await state.sessionClient.probe(ctx.cwd, state.getConfig(), ctx.signal);
-		state.setLiveSession(probe.ok ? "elsewhere" : "none");
-		state.refreshPresentation(ctx);
-	};
-
-	pi.on("session_start", async (_event, ctx) => {
-		await state.reloadConfig(ctx.cwd);
-		state.rehydrate(ctx.sessionManager.getBranch());
-		await refreshAfterSession(ctx);
-	});
-	pi.on("session_tree", async (_event, ctx) => {
-		state.coordinator.cancel();
-		state.rehydrate(ctx.sessionManager.getBranch());
-		await refreshAfterSession(ctx);
-	});
-	pi.on("agent_settled", async (_event, ctx) => {
-		await state.reconcileChangeset(ctx);
-		state.refreshPresentation(ctx);
-	});
 	pi.on("tool_result", (event, ctx) => {
 		if (event.isError) return;
 		if (!isEditToolResult(event) && !isWriteToolResult(event)) return;
 		if (typeof event.input.path !== "string") return;
-		state.activity.record(resolveUserPath(event.input.path, ctx.cwd));
+		activity.record(resolveUserPath(event.input.path, ctx.cwd));
 	});
-	pi.on("session_shutdown", () => state.coordinator.shutdown());
 
 	pi.registerCommand("hunk", {
-		description: "Explicit Hunk review checkpoints (/hunk status, /hunk review, /hunk submit, /hunk abandon, /hunk configure)",
-		getArgumentCompletions: hunkArgumentCompletions,
-		handler: async (args, ctx) => {
-			const sub = args.trim().split(/\s+/).filter(Boolean)[0];
-			if (sub === "configure") {
-				if (!ctx.isIdle()) {
-					diagnostic(ctx, "/hunk configure cannot open while agent responds.", "warning");
-					return;
-				}
-				await openHunkConfig(ctx, () => state.getConfig(), (next) => state.setConfig(next));
-				state.refreshPresentation(ctx);
+		description: "Open a Hunk review; when it closes, its human notes are forwarded to the agent",
+		handler: async (_args, ctx) => {
+			if (!ctx.isIdle()) {
+				diagnostic(ctx, "/hunk requires idle Pi. Wait for the agent response to finish.", "warning");
 				return;
 			}
-			await handleHunkCommand(args, ctx, pi, state);
-		},
-	});
+			if (ctx.mode !== "tui") {
+				diagnostic(ctx, "/hunk needs TUI mode to run Hunk. Start it externally with: hunk diff --watch --no-exclude-untracked", "warning");
+				return;
+			}
+			const config = await loadConfig(ctx.cwd);
+			if (!config.hunk.enabled) {
+				diagnostic(ctx, "Hunk integration is disabled in config.", "warning");
+				return;
+			}
 
-	pi.registerShortcut("ctrl+shift+h", {
-		description: "Open Hunk review checkpoint.",
-		handler: async (ctx) => runReview(ctx, pi, state),
+			const probe = await sessionClient.probe(ctx.cwd, config, ctx.signal);
+			if (probe.ok) {
+				const pid = probe.value.pid;
+				const attach = "Attach: forward its notes when Hunk closes";
+				const choices = [attach];
+				if (pid !== undefined) choices.push(`Stop Hunk (pid ${pid}) and start a new review`);
+				choices.push("Cancel");
+				const choice = await ctx.ui.select("A Hunk session is already active for this repo", choices);
+				if (!choice || choice === "Cancel") return;
+				if (choice === attach) {
+					await runAttachedReview(ctx, pi, sessionClient, git, config, probe.value.sessionId, activity.mostRecent());
+					return;
+				}
+				if (pid === undefined) return;
+				try {
+					process.kill(pid, "SIGTERM");
+				} catch (error) {
+					diagnostic(ctx, `Could not stop the running Hunk (pid ${pid}): ${error instanceof Error ? error.message : String(error)}`, "error");
+					return;
+				}
+				diagnostic(ctx, `Stopped Hunk (pid ${pid}). Starting a new review.`, "info");
+			} else if (probe.error.kind !== "session_disappeared") {
+				diagnostic(ctx, probe.error.message, "error");
+				return;
+			}
+			await runSpawnedReview(ctx, pi, sessionClient, git, config, activity.mostRecent());
+		},
 	});
 }

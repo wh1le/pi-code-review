@@ -4,7 +4,6 @@ import type { HunkFailure, HunkSessionClient } from "./hunk-session-client";
 import type { ReviewSnapshot } from "./review-export";
 
 export type HunkHandoffResult = Readonly<{
-	mode: "reuse" | "spawn";
 	exitCode?: number | null;
 	signal?: string | null;
 	launchError?: string;
@@ -23,7 +22,6 @@ export type HunkTerminal = Readonly<{
 }>;
 
 export type SamplingLease = Readonly<{
-	mode: "reuse" | "spawn";
 	sessionId: string;
 	latest(): ReviewSnapshot | undefined;
 	lastError(): HunkFailure | undefined;
@@ -45,7 +43,6 @@ function disappeared(error: HunkFailure): boolean {
 
 /** Serial, read-only sampling. Bad samples never replace a last known export. */
 export function createSamplingLease(options: {
-	mode: "reuse" | "spawn";
 	client: HunkSessionClient;
 	cwd: string;
 	config: HunkConfig;
@@ -92,7 +89,6 @@ export function createSamplingLease(options: {
 	});
 
 	return {
-		mode: options.mode,
 		sessionId: options.sessionId,
 		latest: () => latest,
 		lastError: () => error,
@@ -118,7 +114,7 @@ function childClosed(child: HunkChild): Promise<{ code: number | null; signal: s
 	});
 }
 
-/** Owns only child/TUI lifecycle. Reused sessions are never spawned or killed. */
+/** Owns only the spawned child and Pi terminal lifecycle; never a session Pi does not own. */
 export async function handoffToSpawnedHunk(options: {
 	client: HunkSessionClient;
 	cwd: string;
@@ -145,7 +141,7 @@ export async function handoffToSpawnedHunk(options: {
 			const probe = await options.client.probe(options.cwd, options.config);
 			const pidMismatch = probe.ok && child.pid !== undefined && probe.value.pid !== undefined && probe.value.pid !== child.pid;
 			if (probe.ok && !pidMismatch) {
-				lease = createSamplingLease({ mode: "spawn", client: options.client, cwd: options.cwd, config: options.config, sessionId: probe.value.sessionId, clock });
+				lease = createSamplingLease({ client: options.client, cwd: options.cwd, config: options.config, sessionId: probe.value.sessionId, clock });
 				await lease.ready();
 				lastError = lease.lastError();
 				options.onSessionReady?.(lease);
@@ -170,7 +166,6 @@ export async function handoffToSpawnedHunk(options: {
 		}
 		const snapshot = lease?.latest();
 		return {
-			mode: "spawn",
 			exitCode: exit.code,
 			signal: exit.signal,
 			launchError: exit.launchError,
@@ -178,7 +173,7 @@ export async function handoffToSpawnedHunk(options: {
 			lastValidExport: snapshot,
 		};
 	} catch (error) {
-		return { mode: "spawn", launchError: String(error), exportError: lastError, lastValidExport: lease?.latest() };
+		return { launchError: String(error), exportError: lastError, lastValidExport: lease?.latest() };
 	} finally {
 		lease?.stop();
 		if (stoppedTui) {
@@ -186,4 +181,43 @@ export async function handoffToSpawnedHunk(options: {
 			options.tui.requestRender(true);
 		}
 	}
+}
+
+export type HunkWatch = Readonly<{
+	/** Resolves with the last complete export once the session disappears (or the watch is stopped). */
+	done: Promise<ReviewSnapshot | undefined>;
+	stop(): void;
+}>;
+
+/** Polls a live, not-owned Hunk session until it disappears. */
+export function watchHunkSession(options: {
+	client: HunkSessionClient;
+	cwd: string;
+	config: HunkConfig;
+	sessionId: string;
+	clock?: Clock;
+}): HunkWatch {
+	let settle!: (snapshot: ReviewSnapshot | undefined) => void;
+	const done = new Promise<ReviewSnapshot | undefined>((resolve) => (settle = resolve));
+	let settled = false;
+	const finish = () => {
+		if (settled) return;
+		settled = true;
+		settle(lease.latest());
+	};
+	const lease = createSamplingLease({
+		client: options.client,
+		cwd: options.cwd,
+		config: options.config,
+		sessionId: options.sessionId,
+		clock: options.clock,
+		onSessionLoss: finish,
+	});
+	return {
+		done,
+		stop() {
+			lease.stop();
+			finish();
+		},
+	};
 }

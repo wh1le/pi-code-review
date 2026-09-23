@@ -1,28 +1,17 @@
 # pi-hunk
 
-Explicit human review checkpoints between Pi and [Hunk](https://github.com/roodriigoooo/hunk).
+One-command human review handoff between Pi and [Hunk](https://github.com/roodriigoooo/hunk).
 
-## Workflow
+`/hunk` opens a Hunk review of your working tree. When you close it, your human notes are forwarded to the agent as a single follow-up turn; an empty review approves silently without starting a model turn.
 
-1. Let Pi change the working tree.
-2. Run `/hunk review` (or `Ctrl+Shift+H`).
-   - No Hunk running: Pi pauses, Hunk opens in the same terminal.
-   - Hunk already open: attaches read-only, returns immediately.
-3. Review and author notes in Hunk, then exit.
-4. On close, the review submits automatically — notes start one agent turn that applies them; an empty review approves silently. If Pi is busy, the checkpoint is kept for later.
-5. Repeat until you submit an empty review to approve.
+## `/hunk`
 
-Only explicitly submitted human notes reach the model. Freshness of the complete changeset is verified before submission.
-
-## Commands
-
-| Command | Action |
-|---|---|
-| `/hunk status` | Checkpoint, session, and freshness status |
-| `/hunk review` | Attach or launch Hunk review |
-| `/hunk submit` | Submit notes manually (busy-agent case) |
-| `/hunk abandon` | Drop the checkpoint without a model turn |
-| `/hunk configure` | Enable/disable, set Hunk binary path |
+- Requires idle Pi and TUI mode.
+- No Hunk running: Pi pauses, Hunk opens in the same terminal (`hunk diff --watch --no-exclude-untracked`).
+- Hunk already running for this repo: choose to **attach** (its notes are forwarded when it closes) or **stop it and start a new review**.
+- On close, the complete changeset is freshness-checked against the Git working tree; a stale review asks you to re-run `/hunk` instead of forwarding.
+- Hunk is focused on the file the agent touched most recently.
+- Only explicitly authored human notes reach the model.
 
 ## Requirements
 

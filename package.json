@@ -1,7 +1,7 @@
 {
   "name": "@roodriigoooo/pi-hunk",
-  "version": "0.9.0",
-  "description": "Explicit Hunk review checkpoints for Pi with safe handoff, freshness checks, and human-authored note delivery.",
+  "version": "1.0.0",
+  "description": "One-command Hunk review handoff for Pi: /hunk opens a Hunk review and forwards its human notes to the agent when it closes.",
   "type": "module",
   "license": "MIT",
   "author": "rosastre",
@@ -43,8 +43,5 @@
     "hunk",
     "code-review",
     "human-in-the-loop"
-  ],
-  "dependencies": {
-    "biome": "^0.3.3"
-  }
+  ]
 }

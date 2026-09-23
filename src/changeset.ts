@@ -14,17 +14,6 @@ export type ChangesetUnknownReason =
 	| "missing_git_fallback"
 	| "git_root_changed";
 
-export type ChangesetComparison =
-	| Readonly<{ kind: "unchanged"; source: "hunk" | "git" }>
-	| Readonly<{ kind: "changed"; source: "hunk" | "git" }>
-	| Readonly<{ kind: "unknown"; reason: ChangesetUnknownReason }>;
-
-export type HunkFingerprint = Readonly<{
-	sessionId: string;
-	targetSignature: string;
-	patchDigest: string;
-}>;
-
 export type ChangesetFile = Readonly<{
 	path: string;
 	previousPath?: string;
@@ -41,11 +30,6 @@ export type GitFingerprint = Readonly<{
 	root: string;
 	patchDigest: string;
 	files: readonly GitFileFingerprint[];
-}>;
-
-export type ChangesetBaseline = Readonly<{
-	hunk: HunkFingerprint;
-	git?: GitFingerprint;
 }>;
 
 function lengthPrefix(value: string): Buffer {
@@ -89,14 +73,6 @@ export function changesetDigest(files: readonly ChangesetFile[]): string {
 	return digest(parts);
 }
 
-export function hunkFingerprint(snapshot: ReviewSnapshot): HunkFingerprint {
-	return {
-		sessionId: snapshot.sessionId,
-		targetSignature: targetSignatureFromSnapshot(snapshot),
-		patchDigest: snapshot.patchDigest,
-	};
-}
-
 export function gitFingerprint(root: string, files: readonly ChangesetFile[]): GitFingerprint {
 	const canonical = canonicalChangesetFiles(files);
 	return {
@@ -112,45 +88,6 @@ export function gitFingerprint(root: string, files: readonly ChangesetFile[]): G
 
 export function gitFingerprintMatchesSnapshot(fingerprint: GitFingerprint, snapshot: ReviewSnapshot): boolean {
 	return fingerprint.patchDigest === changesetDigest(snapshot.files);
-}
-
-export function createChangesetBaseline(snapshot: ReviewSnapshot, git?: GitFingerprint): ChangesetBaseline {
-	return { hunk: hunkFingerprint(snapshot), ...(git ? { git } : {}) };
-}
-
-export function isChangesetBaseline(value: unknown): value is ChangesetBaseline {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const baseline = value as Record<string, unknown>;
-	if (!baseline.hunk || typeof baseline.hunk !== "object" || Array.isArray(baseline.hunk)) return false;
-	const hunk = baseline.hunk as Record<string, unknown>;
-	if (typeof hunk.sessionId !== "string" || !hunk.sessionId || typeof hunk.targetSignature !== "string" || typeof hunk.patchDigest !== "string" || !hunk.patchDigest) return false;
-	if (baseline.git === undefined) return true;
-	if (!baseline.git || typeof baseline.git !== "object" || Array.isArray(baseline.git)) return false;
-	const git = baseline.git as Record<string, unknown>;
-	if (typeof git.root !== "string" || !git.root || typeof git.patchDigest !== "string" || !git.patchDigest || !Array.isArray(git.files)) return false;
-	return git.files.every((file) => {
-		if (!file || typeof file !== "object" || Array.isArray(file)) return false;
-		const item = file as Record<string, unknown>;
-		return typeof item.path === "string" && !!item.path && typeof item.patchDigest === "string" && !!item.patchDigest && (item.previousPath === undefined || typeof item.previousPath === "string");
-	});
-}
-
-export function sameHunkFingerprint(left: HunkFingerprint, right: HunkFingerprint): boolean {
-	return left.sessionId === right.sessionId && left.targetSignature === right.targetSignature && left.patchDigest === right.patchDigest;
-}
-
-export function compareHunkFingerprint(baseline: ChangesetBaseline, snapshot: ReviewSnapshot): ChangesetComparison {
-	return sameHunkFingerprint(baseline.hunk, hunkFingerprint(snapshot))
-		? { kind: "unchanged", source: "hunk" }
-		: { kind: "changed", source: "hunk" };
-}
-
-export function compareGitFingerprint(baseline: ChangesetBaseline, current: GitFingerprint): ChangesetComparison {
-	if (!baseline.git) return { kind: "unknown", reason: "missing_git_fallback" };
-	if (baseline.git.root !== current.root) return { kind: "unknown", reason: "git_root_changed" };
-	return baseline.git.patchDigest === current.patchDigest
-		? { kind: "unchanged", source: "git" }
-		: { kind: "changed", source: "git" };
 }
 
 /** Only an owned default Git working-tree review can use the fallback. */
