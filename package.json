@@ -1,0 +1,50 @@
+{
+  "name": "@roodriigoooo/pi-hunk",
+  "version": "0.9.0",
+  "description": "Explicit Hunk review checkpoints for Pi with safe handoff, freshness checks, and human-authored note delivery.",
+  "type": "module",
+  "license": "MIT",
+  "author": "rosastre",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roodriigoooo/pi-hunk.git"
+  },
+  "homepage": "https://github.com/roodriigoooo/pi-hunk",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "check": "node scripts/units.mjs && node scripts/smoke.mjs"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "hunk",
+    "code-review",
+    "human-in-the-loop"
+  ],
+  "dependencies": {
+    "biome": "^0.3.3"
+  }
+}
