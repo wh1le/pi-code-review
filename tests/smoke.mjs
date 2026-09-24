@@ -209,9 +209,13 @@ if (args[0] === "diff" && args[1] === "--watch") {
 		default: true,
 	});
 	await extension(pi);
-	assert.ok(commands.has("hunk"));
-	assert.equal(shortcuts.size, 0, "no shortcut: /hunk is the only entry point");
-	const command = commands.get("hunk");
+	assert.ok(commands.has("code-review"));
+	assert.equal(
+		shortcuts.size,
+		0,
+		"no shortcut: /code-review is the only entry point",
+	);
+	const command = commands.get("code-review");
 	assert.equal(command.getArgumentCompletions, undefined, "no subcommands");
 	assert.equal(handlers.has("tool_result"), true);
 

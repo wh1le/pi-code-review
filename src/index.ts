@@ -82,7 +82,7 @@ async function forwardReview(
 				) {
 					diagnostic(
 						ctx,
-						"The working tree changed during the review. Run /hunk again to re-review before the notes can be submitted.",
+						"The working tree changed during the review. Run /code-review again to re-review before the notes can be submitted.",
 						"warning",
 					);
 					return;
@@ -253,14 +253,14 @@ export default async function (pi: ExtensionAPI) {
 		activity.record(resolveUserPath(event.input.path, ctx.cwd));
 	});
 
-	pi.registerCommand("hunk", {
+	pi.registerCommand("code-review", {
 		description:
 			"Open a Hunk review; when it closes, its human notes are forwarded to the agent",
 		handler: async (_args, ctx) => {
 			if (!ctx.isIdle()) {
 				diagnostic(
 					ctx,
-					"/hunk requires idle Pi. Wait for the agent response to finish.",
+					"/code-review requires idle Pi. Wait for the agent response to finish.",
 					"warning",
 				);
 				return;
@@ -268,7 +268,7 @@ export default async function (pi: ExtensionAPI) {
 			if (ctx.mode !== "tui") {
 				diagnostic(
 					ctx,
-					"/hunk needs TUI mode to run Hunk. Start it externally with: hunk diff --watch --no-exclude-untracked",
+					"/code-review needs TUI mode to run Hunk. Start it externally with: hunk diff --watch --no-exclude-untracked",
 					"warning",
 				);
 				return;

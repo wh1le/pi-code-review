@@ -7,9 +7,10 @@
 	"author": "wh1le",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/roodriigoooo/pi-code-review.git"
+		"url": "git+https://github.com/wh1le/pi-code-review.git"
 	},
 	"homepage": "https://github.com/wh1le/pi-code-review",
+	"bugs": "https://github.com/wh1le/pi-code-review/issues",
 	"files": [
 		"src",
 		"README.md",
