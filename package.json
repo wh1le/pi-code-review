@@ -34,8 +34,17 @@
       "optional": true
     }
   },
+  "devDependencies": {
+    "eslint": "^9.39.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  },
   "scripts": {
-    "check": "node scripts/units.mjs && node scripts/smoke.mjs"
+    "check": "node tests/units.mjs && node tests/smoke.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint ."
   },
   "keywords": [
     "pi-package",

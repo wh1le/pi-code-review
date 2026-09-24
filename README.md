@@ -9,7 +9,7 @@ One-command human review handoff between Pi and [Hunk](https://github.com/roodri
 - Requires idle Pi and TUI mode.
 - No Hunk running: Pi pauses, Hunk opens in the same terminal (`hunk diff --watch --no-exclude-untracked`).
 - Hunk already running for this repo: choose to **attach** (its notes are forwarded when it closes) or **stop it and start a new review**.
-- On close, the complete changeset is freshness-checked against the Git working tree; a stale review asks you to re-run `/hunk` instead of forwarding.
+- On close, the Git working tree is re-read and compared with the snapshot taken when `/hunk` started; if anything changed during the review, the notes are withheld as stale and you are asked to re-run `/hunk`.
 - Hunk is focused on the file the agent touched most recently.
 - Only explicitly authored human notes reach the model.
 
