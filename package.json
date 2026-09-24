@@ -1,56 +1,53 @@
 {
-  "name": "@roodriigoooo/pi-hunk",
-  "version": "1.0.0",
-  "description": "One-command Hunk review handoff for Pi: /hunk opens a Hunk review and forwards its human notes to the agent when it closes.",
-  "type": "module",
-  "license": "MIT",
-  "author": "rosastre",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/roodriigoooo/pi-hunk.git"
-  },
-  "homepage": "https://github.com/roodriigoooo/pi-hunk",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
-  "engines": {
-    "node": ">=20"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "eslint": "^9.39.0",
-    "prettier": "^3.6.2",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.46.0"
-  },
-  "scripts": {
-    "check": "node tests/units.mjs && node tests/smoke.mjs",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "lint": "eslint ."
-  },
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "hunk",
-    "code-review",
-    "human-in-the-loop"
-  ]
+	"name": "@wh1le/pi-code-review",
+	"version": "1.0.0",
+	"description": "One-command Hunk review handoff for Pi: /hunk opens a Hunk review and forwards its human notes to the agent when it closes.",
+	"type": "module",
+	"license": "MIT",
+	"author": "wh1le",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/roodriigoooo/pi-code-review.git"
+	},
+	"homepage": "https://github.com/wh1le/pi-code-review",
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14"
+	},
+	"scripts": {
+		"check": "node tests/units.mjs && node tests/smoke.mjs",
+		"format": "biome format --write .",
+		"format:check": "biome format .",
+		"lint": "biome lint ."
+	},
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"hunk",
+		"code-review",
+		"human-in-the-loop"
+	]
 }
