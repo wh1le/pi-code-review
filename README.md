@@ -1,10 +1,16 @@
-# pi-hunk
+# pi-code-review
 
-One-command human review handoff between Pi and [Hunk](https://github.com/roodriigoooo/hunk).
+One-command human review handoff between Pi and [Hunk](https://github.com/roodriigoooo/hunk). Built from the working [pi-hunk](https://github.com/roodriigoooo/pi-hunk) extension.
 
 `/code-review` opens a Hunk review of your working tree. When you close it, your human notes are forwarded to the agent as a single follow-up turn; an empty review approves silently without starting a model turn.
 
-## `/code-review`
+## Usage
+
+Invoke the `/code-review` command in Pi:
+
+```
+/code-review
+```
 
 - Requires idle Pi and TUI mode.
 - No Hunk running: Pi pauses, Hunk opens in the same terminal (`hunk diff --watch --no-exclude-untracked`).
