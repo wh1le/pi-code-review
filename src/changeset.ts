@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
-	targetSignatureFromSnapshot,
 	type ReviewSnapshot,
+	targetSignatureFromSnapshot,
 } from "./review-export";
 
 export type ChangesetUnknownReason =

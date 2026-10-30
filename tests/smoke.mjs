@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
 	chmod,
-	mkdtemp,
 	mkdir,
+	mkdtemp,
 	readFile,
 	rm,
 	writeFile,
 } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 

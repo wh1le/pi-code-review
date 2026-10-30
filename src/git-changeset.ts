@@ -1,11 +1,11 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import path from "node:path";
 import {
-	canonicalPatch,
-	gitFingerprint,
 	type ChangesetFile,
 	type ChangesetUnknownReason,
+	canonicalPatch,
 	type GitFingerprint,
+	gitFingerprint,
 } from "./changeset";
 
 export type GitCommandResult = Readonly<{

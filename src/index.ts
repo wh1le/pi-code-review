@@ -1,15 +1,15 @@
 import {
-	isEditToolResult,
-	isWriteToolResult,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
+	isEditToolResult,
+	isWriteToolResult,
 } from "@earendil-works/pi-coding-agent";
 import {
 	isDefaultGitWorkingTreeReview,
 	unknownReasonMessage,
 } from "./changeset";
-import { loadConfig, type HunkConfig } from "./config";
+import { type HunkConfig, loadConfig } from "./config";
 import { createFileActivityStore } from "./file-activity";
 import {
 	createGitChangesetAdapter,
